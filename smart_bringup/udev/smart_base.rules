@@ -1,0 +1,3 @@
+# ESP32-S3 UART1 communication adapter, WCH 1a86:55d4.
+# Installed as 99-smart-base.rules by scripts/install_udev_rule.sh.
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", ATTRS{serial}=="5C85476222", MODE="0660", GROUP="dialout", SYMLINK+="smart_base"

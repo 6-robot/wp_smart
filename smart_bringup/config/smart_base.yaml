@@ -1,0 +1,38 @@
+smart_base_node:
+  ros__parameters:
+    port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5C85476222-if00
+    baud_rate: 460800
+
+    wheel_diameter: 0.0657
+    wheel_base: 0.1805
+    encoder_counts_per_wheel_rev: 262144  # 1024 PPR * 4 * 64
+    left_encoder_sign: 1
+    right_encoder_sign: -1
+    max_encoder_delta: 256000  # Preserve the existing distance threshold at 64:1
+
+    command_rate: 50.0
+    cmd_vel_timeout: 3.0
+    enable_cmd_vel_timeout: false  # Hold the last velocity; refresh ESP32 every second.
+    status_timeout: 0.2
+    reconnect_interval: 1.0
+    max_linear_velocity: 0.5
+    max_angular_velocity: 2.5
+
+    publish_tf: true
+    odom_frame: odom
+    base_frame: base_footprint
+    battery_frame: base_link
+
+    imu_frame: imu_link
+    laser_frame: laser_scan_link
+    require_sensors: true  # Set false when using legacy motor-only firmware.
+    scan_bins: 450
+    scan_range_min: 0.24
+    scan_range_max: 10.0
+    scan_angle_offset_deg: 0.0  # Rear=0, right=90, front=180, left=270
+    scan_angle_direction: -1.0
+
+    pose_covariance_diagonal: [0.02, 0.02, 1000000.0, 1000000.0, 1000000.0, 0.05]
+    twist_covariance_diagonal: [0.03, 0.03, 1000000.0, 1000000.0, 1000000.0, 0.08]
+
+    diagnostic_updater.period: 1.0

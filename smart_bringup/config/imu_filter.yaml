@@ -1,0 +1,10 @@
+smart_imu_filter:
+  ros__parameters:
+    input_topic: imu/data_raw
+    output_topic: imu/data
+    calibration_seconds: 2.0
+    min_calibration_samples: 50
+    stationary_gyro_threshold: 0.15  # rad/s; keep the chassis still during calibration
+    gain: 0.1
+    max_sample_gap: 0.2  # seconds; reinitialize tilt and relative yaw after a gap
+    orientation_stddev: 0.0  # radians; zero covariance means unknown, not exact

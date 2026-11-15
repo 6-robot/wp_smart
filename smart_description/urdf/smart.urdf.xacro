@@ -1,0 +1,124 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="smart">
+  <xacro:arg name="imu_xyz" default="0 0 0"/>
+  <xacro:arg name="imu_rpy" default="0 0 0"/>
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="$(arg imu_xyz)" rpy="$(arg imu_rpy)"/>
+  </joint>
+
+  <xacro:property name="base_mass" value="1.2"/>
+  <xacro:property name="base_radius" value="0.11"/>
+  <xacro:property name="base_height" value="0.05"/>
+
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 1.5708"/>
+      <geometry>
+        <mesh filename="package://smart_description/meshes/smart.dae" scale="1 1 1"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${base_height / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${base_radius}" length="${base_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 ${base_height / 2.0}" rpy="0 0 0"/>
+      <mass value="${base_mass}"/>
+      <inertia
+        ixx="${base_mass * (3.0 * base_radius * base_radius + base_height * base_height) / 12.0}"
+        ixy="0.0"
+        ixz="0.0"
+        iyy="${base_mass * (3.0 * base_radius * base_radius + base_height * base_height) / 12.0}"
+        iyz="0.0"
+        izz="${base_mass * base_radius * base_radius / 2.0}"/>
+    </inertial>
+  </link>
+
+  <link name="laser_link">
+    <inertial>
+      <mass value="0.2"/>
+      <inertia ixx="0.0002" ixy="0.0" ixz="0.0" iyy="0.0002" iyz="0.0" izz="0.0002"/>
+    </inertial>
+  </link>
+
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser_link"/>
+    <origin xyz="-0.025 0 0.05" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Serial /scan uses a rear-facing +X axis; the physical laser frame stays unchanged. -->
+  <link name="laser_scan_link"/>
+  <joint name="laser_scan_joint" type="fixed">
+    <parent link="laser_link"/>
+    <child link="laser_scan_link"/>
+    <origin xyz="0 0 0" rpy="0 0 ${pi}"/>
+  </joint>
+
+  <gazebo reference="laser_link">
+    <sensor type="ray" name="laser_link">
+      <pose>0 0 0.06 0 0 0</pose>
+      <visualize>true</visualize>
+      <update_rate>10</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159265</min_angle>
+            <max_angle>3.14159265</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.24</min>
+          <max>10.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </ray>
+      <plugin name="gazebo_ros_laser_link_controller" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <namespace>/</namespace>
+          <remapping>~/out:=scan</remapping>
+        </ros>
+        <output_type>sensor_msgs/LaserScan</output_type>
+        <frame_name>laser_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo>
+    <plugin name="base_controller" filename="libgazebo_ros_planar_move.so">
+      <ros>
+        <remapping>cmd_vel:=cmd_vel</remapping>
+        <remapping>odom:=odom</remapping>
+      </ros>
+      <update_rate>100</update_rate>
+      <publish_rate>20</publish_rate>
+      <publish_odom>true</publish_odom>
+      <publish_odom_tf>true</publish_odom_tf>
+      <odometry_frame>odom</odometry_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+      <covariance_x>0.0001</covariance_x>
+      <covariance_y>0.0001</covariance_y>
+      <covariance_yaw>0.01</covariance_yaw>
+    </plugin>
+  </gazebo>
+</robot>

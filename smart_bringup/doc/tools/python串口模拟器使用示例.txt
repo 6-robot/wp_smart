@@ -1,0 +1,63 @@
+Python 串口检查工具
+===================
+
+serial_ros2_sim.py 模拟上位机发送速度指令，并显示底盘状态。
+它直接占用串口，不启动 ROS 节点，也不发布 IMU、雷达或里程计话题。
+使用时先停止 ROS 底盘驱动，电机联调前确认供电并将驱动轮架空。
+
+安装依赖
+--------
+
+  python -m pip install pyserial
+
+启动检查
+--------
+
+以下命令从 wp_smart 目录执行。COM9 仅为串口名称示例，应替换为底盘通讯口：
+
+  python smart_bringup/doc/tools/serial_ros2_sim.py --port COM9 --baud 460800 --linear 0 --angular 0
+
+Linux 同样支持，将 --port 改为实际通讯设备路径即可。
+工具的 --baud 默认值为 115200，连接本项目串口固件必须显式传入 --baud 460800。
+工具的 --linear 默认值为 0.05 m/s，检查通讯时应显式传入 --linear 0。
+
+短时电机测试示例
+----------------
+
+  python smart_bringup/doc/tools/serial_ros2_sim.py --port COM9 --baud 460800 --linear 0.02 --angular 0
+  python smart_bringup/doc/tools/serial_ros2_sim.py --port COM9 --baud 460800 --linear 0 --angular 0.3
+
+正线速度为前进，正角速度为左转；单位分别是 m/s、rad/s。
+程序持续发送指定速度；Ctrl+C 会发送 5 帧零速后退出。
+
+参数
+----
+
+  --port     底盘通讯串口，必填。
+  --baud     波特率，本项目使用 460800。
+  --linear   线速度，默认 0.05 m/s。
+  --angular  角速度，默认 0 rad/s。
+  --rate     发送频率，默认 50 Hz。
+  --timeout  串口读取超时，默认 0 秒（非阻塞读取）。
+
+状态与诊断
+----------
+
+  TX         工具发送的速度命令数量。
+  L、R       左右轮当前/目标输出轴转速，单位 rpm。
+  ENC        左右原始累计码盘；右轮前进通常为负。
+  PWM        左右有符号 PWM。
+  BAT        ADC 估计电压，单位 V。
+  FW         固件版本字段。
+  RXB        固件串口接收字节数。
+  OK         固件接受的有效控制命令数。
+  BADCRC     校验错误帧数。
+  BADLEN     长度或语义错误计数。
+  FLAGS      工具显示 HOST、TIMEOUT、LOW_BAT 三种状态名称。
+
+HOST 表示指令期限有效；TIMEOUT 表示非零指令发生超时，下一帧有效速度会清除此标志。
+IMU 和雷达状态位的定义见 docs/serial_protocol.md，工具不单独显示这两个名称。
+
+正常通讯时 TX、RXB、OK 持续增长，BADCRC、BADLEN 不持续增长。
+TX 增长而 RXB 不变时检查端口、TX/RX 和共地；RXB 增长但 OK 不变时检查波特率与帧格式。
+该工具只用于控制与状态检查，传感器联动应使用 smart_bringup。
