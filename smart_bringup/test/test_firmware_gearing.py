@@ -120,7 +120,7 @@ def test_new_serial_pid_scale_and_stop_without_loop(tmp_path):
     source = (firmware / 'smart_esp32_serial.ino').read_text()
     macros = '\n'.join(re.search(r'^#define ' + name + r'\s+[^\n]+', source, re.M)[0]
                        for name in ('ENCODER_PPR', 'COUNTS_PER_REV', 'REDUCTION_RATIO',
-                                    'CMD_TIMEOUT_MS'))
+                                    'CMD_TIMEOUT_MS', 'LIDAR_PWM_CHANNEL', 'LIDAR_RUN_DUTY'))
     program = tmp_path / 'serial_pid.cpp'
     program.write_text(r'''
 #include <cassert>
@@ -136,7 +136,7 @@ int commandMux=0, telemetryMux=0;
 uint32_t clock_ms=100;
 uint32_t millis(){return clock_ms;}
 int16_t hardware_counts[2]={1024,-1024};
-int duty[4]={};
+int duty[5]={};
 void pcnt_get_counter_value(int unit,int16_t *value){*value=hardware_counts[unit];}
 void ledcWrite(int channel,int value){duty[channel]=value;}
 template<class T> T constrain(T v,T lo,T hi){return v<lo?lo:(v>hi?hi:v);}
@@ -152,20 +152,48 @@ int main(){
   assert(motorState.encoders[0]==1024 && motorState.encoders[1]==-1024);
   assert(std::fabs(motorState.rpm[0]/0.6f-23.4375f)<1e-5f);
   assert(motorState.pwm[0]==0 && motorState.pwm[1]==0);
+  assert(duty[LIDAR_PWM_CHANNEL]==0);  // No host command since startup.
   motion.accept(30,-30,100);
   clock_ms=110;
   pid_update();
   assert(motorState.pwm[0]>0 && motorState.pwm[1]<0);
+  assert(duty[LIDAR_PWM_CHANNEL]==LIDAR_RUN_DUTY);
   // Do not call loop() or any serial routine: the PID task must stop on its own.
   clock_ms=3099;
   pid_update();
   assert(motion.valid && motorState.targets[0]==30 && motorState.targets[1]==-30);
+  assert(duty[LIDAR_PWM_CHANNEL]==LIDAR_RUN_DUTY);
   clock_ms=3100;
   pid_update();
   assert(!motion.valid && motion.timed_out);
   assert(motorState.targets[0]==0 && motorState.targets[1]==0);
   assert(motorState.pwm[0]==0 && motorState.pwm[1]==0);
-  for(int value:duty) assert(value==255);  // DRV8870 braking.
+  for(int channel=0;channel<4;++channel) assert(duty[channel]==255);  // DRV8870 braking.
+  assert(duty[LIDAR_PWM_CHANNEL]==0);
+  // An idle host starts scanning without moving the wheels. Its 1 Hz keepalive
+  // sustains scanning beyond the original lease, then disconnect stops it.
+  for(clock_ms=4000;clock_ms<=8000;clock_ms+=1000) {
+    motion.accept(0,0,clock_ms);
+    pid_update();
+    assert(duty[LIDAR_PWM_CHANNEL]==LIDAR_RUN_DUTY);
+    assert(motorState.pwm[0]==0 && motorState.pwm[1]==0);
+  }
+  clock_ms=10999;pid_update();
+  assert(duty[LIDAR_PWM_CHANNEL]==LIDAR_RUN_DUTY);
+  clock_ms=11000;pid_update();
+  assert(duty[LIDAR_PWM_CHANNEL]==0 && !motion.valid && !motion.timed_out);
+  // Resumption and explicit STOP work independently of loop() and wheel speed.
+  clock_ms=12000;motion.accept(0,0,clock_ms);pid_update();
+  assert(duty[LIDAR_PWM_CHANNEL]==LIDAR_RUN_DUTY);
+  motion.stop();clock_ms+=10;pid_update();
+  assert(duty[LIDAR_PWM_CHANNEL]==0);
+  // Millis rollover does not prematurely stop scanning or extend the timeout.
+  clock_ms=0xfffffff0U;motion.accept(0,0,clock_ms);pid_update();
+  assert(duty[LIDAR_PWM_CHANNEL]==LIDAR_RUN_DUTY);
+  clock_ms=0xba7U;pid_update();
+  assert(duty[LIDAR_PWM_CHANNEL]==LIDAR_RUN_DUTY);
+  clock_ms=0xba8U;pid_update();
+  assert(duty[LIDAR_PWM_CHANNEL]==0);
 }
 ''')
     executable = tmp_path / 'serial_pid'
@@ -210,8 +238,16 @@ struct Port {
 } HostSerial;
 MotionGuard motion;
 uint32_t rxByteCount=0,rxValidCmdCount=0,rxBadChecksumCount=0,rxBadLenCount=0;
+float commandLinear=0,commandAngular=0,ledLinear=0,ledAngular=0;
+bool commandStopped=false,ledStandby=false;
+uint32_t ledStamp=0;
+void ws2812_update_motion(float linear,float angular,uint32_t now,bool standby) {
+  ledLinear=linear;ledAngular=angular;ledStamp=now;ledStandby=standby;
+}
+void ws2812_show() {}
 ''' + macros + '\n' + _function(source, 'handleCommand') + '\n' +
-                       _function(source, 'pollHost') + r'''
+                       _function(source, 'pollHost') + '\n' +
+                       _function(source, 'pollLedMotion') + r'''
 std::vector<uint8_t> frame(float l,float r) {
   std::vector<uint8_t> f={0xaa,0x55,1,8};
   uint8_t payload[8]; std::memcpy(payload,&l,4);std::memcpy(payload+4,&r,4);
@@ -220,6 +256,7 @@ std::vector<uint8_t> frame(float l,float r) {
   f.push_back(sum);return f;
 }
 int main() {
+  pollLedMotion(clock_ms);assert(ledLinear==0 && ledAngular==0 && ledStandby);
   auto valid=frame(0.1f,0);
   HostSerial.queue={0x77,0xaa};pollHost();
   assert(rxValidCmdCount==0);
@@ -241,8 +278,10 @@ int main() {
   clock_ms=3200;HostSerial.queue={0xaa,0x55,1,8};pollHost();
   clock_ms=3260;HostSerial.queue=frame(0,0);pollHost();
   assert(rxValidCmdCount==2 && motion.valid && !motion.timed_out);
+  pollLedMotion(clock_ms);assert(!ledStandby);  // Valid zero stays blue.
   HostSerial.queue={0xaa,0x55,2,0,2};pollHost();
   assert(rxValidCmdCount==3 && !motion.valid && motion.left==0 && motion.right==0);
+  pollLedMotion(clock_ms);assert(!ledStandby);  // Explicit stop also stays blue.
   // Corrupt long frame enclosing valid movement, zero and stop frames. Preserve
   // every trailing valid frame when the parser resynchronizes inside that buffer.
   HostSerial.queue={0xaa,0x55,0x7f,64};
@@ -255,6 +294,35 @@ int main() {
   HostSerial.queue.back()=uint8_t(sum+1);
   pollHost();
   assert(rxValidCmdCount==6 && !motion.valid && motion.left==0 && motion.right==0);
+  // Feed the exact validated, limited command to LEDs, then expire the copy
+  // even if the independent PID task has not yet updated the shared guard.
+  clock_ms=5000;HostSerial.queue=frame(9,-9);pollHost();pollLedMotion(clock_ms);
+  assert(ledLinear==MAX_LINEAR_MPS && ledAngular==-MAX_ANGULAR_RADPS);
+  assert(!ledStandby);
+  clock_ms=7999;pollLedMotion(clock_ms);assert(ledLinear==MAX_LINEAR_MPS);
+  clock_ms=8000;pollLedMotion(clock_ms);
+  assert(ledLinear==0 && ledAngular==0 && ledStamp==8000 && motion.valid && ledStandby);
+  // A bad frame cannot change the LED command or extend the lease.
+  HostSerial.queue=frame(std::numeric_limits<float>::quiet_NaN(),0);pollHost();
+  pollLedMotion(clock_ms);assert(ledLinear==0 && ledAngular==0);
+  clock_ms=8100;HostSerial.queue=frame(-0.03f,0.2f);pollHost();pollLedMotion(clock_ms);
+  assert(ledLinear==-0.03f && ledAngular==0.2f);
+  HostSerial.queue={0xaa,0x55,2,0,2};pollHost();pollLedMotion(clock_ms);
+  assert(ledLinear==0 && ledAngular==0 && !ledStandby);
+  clock_ms=8200;HostSerial.queue=frame(0.03f,0);pollHost();
+  clock_ms=9200;HostSerial.queue=frame(0.03f,0);pollHost();
+  clock_ms=12199;pollLedMotion(clock_ms);assert(ledLinear==0.03f);
+  clock_ms=12200;pollLedMotion(clock_ms);assert(ledLinear==0 && ledAngular==0);
+  // A zero-speed lease expires too, despite the motion alarm staying clear.
+  clock_ms=13000;HostSerial.queue=frame(0,0);pollHost();pollLedMotion(clock_ms);
+  assert(!ledStandby);
+  clock_ms=15999;pollLedMotion(clock_ms);assert(!ledStandby);
+  clock_ms=16000;pollLedMotion(clock_ms);assert(ledStandby);
+  HostSerial.queue={0xaa,0x55,2,0,2};pollHost();
+  clock_ms=20000;pollLedMotion(clock_ms);assert(!ledStandby);
+  clock_ms=0xfffffff0U;HostSerial.queue=frame(0,-0.2f);pollHost();
+  clock_ms=0xba7U;pollLedMotion(clock_ms);assert(ledAngular==-0.2f);
+  clock_ms=0xba8U;pollLedMotion(clock_ms);assert(ledLinear==0 && ledAngular==0);
 }
 ''')
     executable = tmp_path / 'serial_commands'

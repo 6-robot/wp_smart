@@ -50,16 +50,18 @@ sudo src/wp_smart/smart_bringup/scripts/install_udev_rule.sh
 | X2N UART2 RX、TX / 电机 PWM | 47、48 / 21 |
 | IMU、OLED 共用 I²C SDA、SCL | 9、10；IMU `0x68`、OLED `0x3C` |
 | 电池 ADC | 1 |
+| WS2812B 灯带数据（6 颗，GRB、800 Kbps） | 45，经板载电平转换连接 DIN |
 
 ## 编译与烧录
 
-以下命令从包含 `src/wp_smart` 的 colcon 工作空间根目录执行。使用 ROS 2 Humble，先加载本机 ROS 环境。固件使用 **Espressif ESP32 core 2.0.17**，无需额外 Arduino 库。
+以下命令从包含 `src/wp_smart` 的 colcon 工作空间根目录执行。使用 ROS 2 Humble，先加载本机 ROS 环境。固件使用 **Espressif ESP32 core 2.0.17** 和 **Adafruit NeoPixel 1.15.5**，不需要升级 Core。
 
 ```bash
 rosdep install --from-paths src/wp_smart --ignore-src -r -y
 colcon build --symlink-install --packages-up-to smart_tutorials
 source install/setup.bash
 
+arduino-cli lib install 'Adafruit NeoPixel@1.15.5'
 read -r -p '烧录串口设备路径: ' FLASH_PORT
 arduino-cli compile --fqbn esp32:esp32:esp32s3:UploadSpeed=115200,PSRAM=disabled \
   src/wp_smart/firmware/smart_esp32_serial
@@ -234,7 +236,9 @@ ros2 launch smart_bringup bringup.launch.py enable_cmd_vel_timeout:=true
 
 此开关为只读启动参数，变更需重启驱动；`/diagnostics` 的 `Command timeout enabled` 可查看当前模式。雷达预览、IMU 显示以及建图、导航入口启动底盘时也沿用此参数。显式零速、正常退出和串口故障期间 ESP32 自身的超时保护不受开关影响。
 
-启动时车轮保持零速，雷达自动旋转。非零速联调前确认电池供电并将驱动轮架空。
+ESP32 上电时车轮保持零速，GPIO21 的雷达 PWM 为 0。收到有效串口速度帧（包括零速）后，雷达 PWM 输出 110/255（10 kHz，LEDC 通道 4）；满 3 秒未收到有效速度帧时关闭 PWM，收到新帧后恢复。显式 `0x02` 停止帧同时关闭雷达 PWM，实际停稳存在机械惯性。电机 PWM 保持 20 kHz、LEDC 通道 0–3。
+
+底盘驱动启动后会持续发送速度帧，因此车轮静止时也能扫描；停止发布 `/cmd_vel` 不会关闭雷达。驱动退出或串口断开后，最后一帧速度满 3 秒才停转。非零速联调前确认电池供电并将驱动轮架空。
 
 ### 雷达角度与屏幕状态
 
@@ -243,7 +247,7 @@ ros2 launch smart_bringup bringup.launch.py enable_cmd_vel_timeout:=true
 板载 SSD1306 OLED 状态页（128×64，I²C 地址 `0x3C`）显示如下内容，数值为示例：
 
 ```text
-WP-SMART 20261115
+WP-SMART 2026111707
 BAT:11.80V
 FRONT:1.23m
 L ENC:123456
@@ -251,14 +255,20 @@ R ENC:-123456
 IMU:OK    LIDAR:OK
 ```
 
-- 首行日期来自固件中的固定字符串，不是实时时钟。
+- 首行显示 `WP-SMART` 和 `FIRMWARE_VERSION` 固件版本号，与串口状态帧和启动日志使用同一版本宏；以后更新版本宏即可同步屏幕显示，不是实时时钟。
 - 第二行显示电池电压；无有效电压时显示 `BAT:--V`。电压分压校正需实测核对。
-- `FRONT` 是以雷达为起点、车头方向 ±5° 内的最近有效距离，过滤 0.24–10 m 以外的回波。仅使用完整有效扫描；该扇区没有回波或扫描超过 1 秒未更新时显示 `--`，不保留旧距离。无需 ROS 主机连接也会更新。
+- `FRONT` 是以雷达为起点、车头方向 ±5° 内的最近有效距离，过滤 0.24–10 m 以外的回波。仅使用完整有效扫描；该扇区没有回波或扫描超过 1 秒未更新时显示 `--`，不保留旧距离。雷达转动期间由固件直接更新，无需 ROS 订阅。
 - 左右码盘显示与 `/encoder_counts` 一致的原始有符号累计计数，右轮前进通常为负。
 - 最后一行的 IMU 状态与雷达状态之间固定间隔 4 个 ASCII 空格。
 - 状态页每 500 ms 取样一次，每次主循环最多发送 16 字节像素；I²C 与 IMU 在主循环中顺序使用。屏幕缺失或刷新出错时停止屏幕传输，电机 PID 和 3 秒超时停车仍在独立任务中运行。
 
 IMU 使用 [InvenSense MPU-60x0 寄存器说明](https://www.electrokit.com/upload/product/41013/41013621/RM-MPU-60xxA_rev_4.pdf) 的量程换算。原始输出没有零偏、尺度或安装方向标定，不能直接作为已融合姿态使用。IMU 时间戳为主机收包时刻；雷达为整圈接收时刻，未做时钟同步或运动去畸变。
+
+## WS2812B 灯带
+
+固件通过 GPIO45 控制 6 颗 WS2812B，亮度上限为 32/255。上电等待指令和指令超时后，按红、黄、绿、青、蓝、品红循环呼吸，每 2 秒平滑过渡到下一种颜色，保留非零亮度，不出现全灭间隔；正常零速或显式停止保持蓝色呼吸。前进绿色全亮；左右转向显示对应方向累积流水，后退转向为红色，前进转向和原地转向为黄色，每 100 ms 增加一颗，全亮后全灭 100 ms 再循环，完整周期 0.7 秒；直线后退红色亮 1 秒、灭 1 秒。转向优先于前进和后退。
+
+灯效使用有效速度指令，不使用码盘实测速度。沿用驱动的速度保活机制，停止发布 `/cmd_vel` 不等于进入停车灯效。灯珠暂按 0 在车辆左侧、5 在右侧排列；若方向相反，将 `ws2812_led.h` 中的 `WS2812_REVERSE_ORDER` 改为 `true`。主循环非阻塞更新，不修改串口协议、不使用 LEDC。接口、阈值和测试方法见 [灯带说明](docs/ws2812_led.md)。
 
 ## SLAM 建图与导航
 

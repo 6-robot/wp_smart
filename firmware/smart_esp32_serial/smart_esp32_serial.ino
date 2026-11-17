@@ -7,6 +7,7 @@
 #include "motion_guard.h"
 #include "display_data.h"
 #include "status_display.h"
+#include "ws2812_led.h"
 
 #define ENC1_A_PIN 4
 #define ENC1_B_PIN 5
@@ -20,7 +21,7 @@
 #define MAX_LINEAR_MPS 0.5f
 #define MAX_ANGULAR_RADPS 2.5f
 #define CMD_TIMEOUT_MS 3000
-#define FIRMWARE_VERSION 2026111506UL
+#define FIRMWARE_VERSION 2026111707UL
 #define MOTOR1_IN1 11
 #define MOTOR1_IN2 12
 #define MOTOR2_IN1 13
@@ -31,6 +32,10 @@
 #define LEDC_M2_IN2 3
 #define MOTOR_PWM_FREQ 20000
 #define MOTOR_PWM_RES 8
+#define LIDAR_PWM_PIN 21
+#define LIDAR_PWM_CHANNEL 4
+#define LIDAR_PWM_FREQ 10000
+#define LIDAR_RUN_DUTY 110
 #define LIDAR_MAX_SAMPLES 80
 #define LIDAR_POLL_BYTES 1024
 #define MAX_SCAN_POINTS 1200
@@ -42,6 +47,9 @@ Ticker pidTicker;
 portMUX_TYPE commandMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE telemetryMux = portMUX_INITIALIZER_UNLOCKED;
 MotionGuard motion;
+// Only the main task accesses these validated, limited command velocities.
+float commandLinear = 0, commandAngular = 0;
+bool commandStopped = false;  // Distinguish explicit STOP from startup/lease expiry.
 struct MotorState {
   float rpm[2] = {};
   float targets[2] = {};
@@ -76,11 +84,19 @@ void handleLidarPacket(uint8_t, uint8_t, uint16_t, uint16_t, uint16_t, const uin
 // Called by the independent 100 Hz task. loop() never writes PWM or PI state.
 void pid_update() {
   float targets[2];
+  bool commandActive;
   portENTER_CRITICAL(&commandMux);
   motion.expire(millis(), CMD_TIMEOUT_MS);
   targets[0] = motion.left;
   targets[1] = motion.right;
+  commandActive = motion.valid;
   portEXIT_CRITICAL(&commandMux);
+  // Zero-speed commands keep scanning; startup, STOP and lease expiry stop it.
+  static bool lidarRunning = false;
+  if (commandActive != lidarRunning) {
+    ledcWrite(LIDAR_PWM_CHANNEL, commandActive ? LIDAR_RUN_DUTY : 0);
+    lidarRunning = commandActive;
+  }
   static int16_t previous[2] = {};
   static uint32_t counts[2] = {};
   static float speeds[2] = {}, integrals[2] = {}, previousOutput[2] = {};
@@ -139,6 +155,8 @@ void handleCommand(uint8_t type, const uint8_t* payload, uint8_t length) {
     portENTER_CRITICAL(&commandMux);
     motion.stop();
     portEXIT_CRITICAL(&commandMux);
+    commandLinear = commandAngular = 0;
+    commandStopped = true;
     ++rxValidCmdCount;
   } else if (type == 0x01 && length == 8) {
     float linear, angular;
@@ -152,8 +170,22 @@ void handleCommand(uint8_t type, const uint8_t* payload, uint8_t length) {
     portENTER_CRITICAL(&commandMux);
     motion.accept(left, right, millis());
     portEXIT_CRITICAL(&commandMux);
+    commandLinear = linear; commandAngular = angular;
+    commandStopped = false;
     ++rxValidCmdCount;
   } else { ++rxBadLenCount; }
+}
+
+void pollLedMotion(uint32_t now) {
+  MotionGuard current;
+  portENTER_CRITICAL(&commandMux);
+  current = motion;
+  portEXIT_CRITICAL(&commandMux);
+  // Check a snapshot too: animation timeout must not depend on PID scheduling.
+  current.expire(now, CMD_TIMEOUT_MS);
+  ws2812_update_motion(current.valid ? commandLinear : 0,
+    current.valid ? commandAngular : 0, now, !current.valid && !commandStopped);
+  ws2812_show();
 }
 
 void pollHost() {
@@ -256,7 +288,7 @@ void sendStatus(uint32_t now) {
 }
 
 void lidarFinishCurrentScan(uint32_t now) {
-  // The on-board display remains useful even without a connected ROS host.
+  // Update the front distance from complete scans while the lidar is running.
   if (scanAligned && !scanOverflow && writeCount >= 100) {
     frontDistance.update(scans[writeIndex], writeCount, now);
   }
@@ -278,7 +310,8 @@ void pollDisplay(uint32_t now) {
   portENTER_CRITICAL(&telemetryMux); state = motorState; portEXIT_CRITICAL(&telemetryMux);
   char line[32];
   statusDisplay.clear();
-  statusDisplay.drawString(0, 0, "WP-SMART 20261115");
+  snprintf(line, sizeof(line), "WP-SMART %lu", FIRMWARE_VERSION);
+  statusDisplay.drawString(0, 0, line);
   if (!isfinite(batteryVoltage) || batteryVoltage <= 0) snprintf(line, sizeof(line), "BAT:--V");
   else snprintf(line, sizeof(line), "BAT:%.2fV", batteryVoltage);
   statusDisplay.drawString(0, 10, line);
@@ -558,20 +591,24 @@ void pollLidarSerial() {
 
 void setup() {
   // Coast before peripherals initialize; PID applies braking at zero speed.
-  for (int pin : {11, 12, 13, 14, 21}) { pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
+  for (int pin : {11, 12, 13, 14, LIDAR_PWM_PIN}) { pinMode(pin, OUTPUT); digitalWrite(pin, LOW); }
   Serial.begin(115200);
   HostSerial.setRxBufferSize(2048);
   HostSerial.begin(460800, SERIAL_8N1, 18, 17);
   LidarSerial.setRxBufferSize(4096);
   LidarSerial.begin(115200, SERIAL_8N1, 47, 48);
   pcnt_encoder_init(); motor_init();
+  // Configure the lidar output before the independent control task can use it.
+  ledcSetup(LIDAR_PWM_CHANNEL, LIDAR_PWM_FREQ, MOTOR_PWM_RES);
+  ledcAttachPin(LIDAR_PWM_PIN, LIDAR_PWM_CHANNEL);
+  ledcWrite(LIDAR_PWM_CHANNEL, 0);
   pidTicker.attach_ms(10, pid_update);
   Wire.begin(9, 10); Wire.setTimeOut(10); Wire.setClock(100000);
   initImu();
   analogReadResolution(12); analogSetPinAttenuation(1, ADC_11db);
   batteryVoltage = analogReadMilliVolts(1)*0.001f*5.1f*3.3f/2.5f;
   Serial.printf("OLED ready=%d\n", statusDisplay.begin());
-  ledcSetup(4, 20000, 8); ledcAttachPin(21, 4); ledcWrite(4, 110);
+  Serial.printf("WS2812 ready=%d\n", ws2812_init());
   Serial.printf("WP serial firmware %lu, UART1=460800, ratio=64:1\n", FIRMWARE_VERSION);
 }
 void loop() {
@@ -593,5 +630,6 @@ void loop() {
       rxValidCmdCount, imuReady, lidarPacketCount, lidarBadChecksumCount, lidarDroppedScans, batteryVoltage);
   }
   pollDisplay(millis());
+  pollLedMotion(millis());  // Nonblocking animations and refresh stay in the main task.
   delay(1);
 }

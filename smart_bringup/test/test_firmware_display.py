@@ -79,7 +79,7 @@ int main() {
   assert(display.begin() && !display.pending());
   assert(Wire.transactions.size()==1 && Wire.transactions[0].size()<=32);
   display.clear();
-  display.drawString(0,0,"WP-SMART 20261115");
+  display.drawString(0,0,"WP-SMART 4294967295");  // A full uint32 version fits.
   display.drawString(0,10,"BAT:12.60V");
   display.drawString(0,30,"L ENC:-2147483648");
   display.drawString(0,40,"R ENC:2147483647");

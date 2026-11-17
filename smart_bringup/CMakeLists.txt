@@ -138,6 +138,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_firmware_display test/test_firmware_display.py
     TIMEOUT 60
   )
+  ament_add_pytest_test(test_firmware_ws2812 test/test_firmware_ws2812.py
+    TIMEOUT 60
+  )
 endif()
 
 ament_package()

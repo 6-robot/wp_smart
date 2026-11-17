@@ -7,6 +7,8 @@ sudo apt install -y ros-humble-teleop-twist-keyboard
 sudo apt install -y ros-humble-navigation2
 sudo apt install -y ros-humble-nav2-bringup
 sudo apt install -y ros-humble-usb-cam
+sudo apt install -y ros-humble-rviz2
+sudo apt install -y ros-humble-imu-filter-madgwick
 sudo apt install -y ros-humble-ros2-control
 sudo apt install -y ros-humble-ros2-controllers
 sudo apt install -y ros-humble-xacro
