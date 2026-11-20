@@ -20,25 +20,20 @@ ESP32-S3 通过一条 UART 与 `smart_bringup` 联动，承载双差动电机控
 | 烧录、115200 调试日志 | `ttyUSB` | CP2102 `10c4:ea60` | `0001` |
 | 底盘通讯、460800 8N1 | `ttyACM` | WCH `1a86:55d4` | `5C85476222` |
 
-`install_udev_rule.sh` 只安装当前 WCH 底盘通讯口规则；雷达与 IMU 共用该串口，无需单独的雷达设备映射。
+`create_udev_rule.sh` 只安装 WCH 底盘通讯口规则；雷达与 IMU 共用该串口，无需单独的雷达设备映射。
 
 ### 安装底盘 udev 规则
 
-`smart_bringup/udev/smart_base.rules` 按 WCH 的厂商 ID `1a86`、产品 ID `55d4` 和序列号 `5C85476222` 匹配通讯口，生成 `smart_base` 设备别名。
+`smart_bringup/udev/smart_base.rules` 按 WCH 的厂商 ID `1a86`、产品 ID `55d4` 匹配 `ttyACM` 通讯口，不限制序列号，生成 `/dev/smart_base` 设备别名。同时连接多个同型号适配器会产生别名冲突，使用此规则时只连接一个匹配设备。
 
 从工作空间根目录执行：
 
 ```bash
-# 先检查匹配结果，不需要 sudo，也不会修改系统或读写串口
-src/wp_smart/smart_bringup/scripts/install_udev_rule.sh --dry-run
-
 # 安装时输入 sudo 密码
-sudo src/wp_smart/smart_bringup/scripts/install_udev_rule.sh
+sudo src/wp_smart/smart_bringup/scripts/create_udev_rule.sh
 ```
 
-脚本读取规则中的设备身份，查找匹配通讯口，备份系统规则并处理同名别名冲突，然后重载 udev、验证别名；失败时恢复备份。
-
-脚本支持 `--device` 指定通讯设备路径。更换适配器后，更新 `smart_base.rules` 中的设备身份，再用 `--dry-run` 核对。
+脚本将规则复制到 `/etc/udev/rules.d/99-smart-base.rules`（覆盖同名文件），然后重载 udev、刷新 tty 设备并等待处理完成。不需要提前连接设备；连接后可用 `ls -l /dev/smart_base` 检查别名。更换同厂商、同产品 ID 的适配器无需修改规则。
 
 安装后，启动时可把生成的设备别名路径传给 `port`。若未安装别名，省略 `port` 参数即可使用默认 by-id 路径。修改工程文件或仅加载工作空间不会自动创建系统设备别名。
 
